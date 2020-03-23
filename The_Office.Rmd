@@ -1,0 +1,386 @@
+---
+title: "An analysis of dialogue in *The Office* (US)"
+author: "Mike Jeziorski"
+date: "22 Mar 2020"
+output: 
+  html_document:
+    theme: cerulean
+    df_print: kable
+---
+
+<style type="text/css">
+
+body, td {
+   font-size: 16px;
+}
+code.r{
+  font-size: 12px;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(here)
+library(fuzzyjoin)
+library(readxl)
+library(networkD3)
+```
+
+This is my first attempt at a blogpost based on a [Tidy Tuesday dataset](https://github.com/rfordatascience/tidytuesday).  This week the Tidy Tuesday project is the complete set of dialogue from *The Office* (US), a show that my 15-year-old son and I have binged several times over.  We are not quite at the point of having memorized all the dialogue, but we can see that point from here.  
+
+## I really Schruted it
+
+![](images_2020_12/Kevin_chili.gif)
+
+As I was about to post this article, I realized that the Tidy Tuesday repository contained not only a link to the `schrute` package, but also a link to the [article in *The Pudding* by Caitlyn Ralph](https://pudding.cool/2017/08/the-office/).  Caitlyn used a different dataset, [officequotes.net](https://www.officequotes.net/no3-20.php), than either the `schrute` package (see below for a discussion of its problems) or the file I found created by Abhinav Ralhan.  I think Caitlyn's careful analysis was made easier by locating cleaner data, and I wish I had used the same starting point.
+
+## Creed Bratton, Quality Assurance
+
+In December, the `schrute` package was released by Brad Lindblad, and I happily began a holiday project of combing through the data contained within.  However, I immediately found some problems with the data.  For example, let's look at one of the most (in)famous episodes of *The Office*, "Dinner Party" (season 4, episode 13):  
+
+```{r}
+library(schrute)
+theoffice %>%
+    filter(episode_name == "Dinner Party") %>%
+    select(index, episode, character, text) %>%
+    head(10)
+```
+
+As anyone who has seen that supremely cringey episode knows, the dialogue in all caps is a climactic confrontation between Michael and Jan.  For some reason, the index of dialogue lines in the `schrute` dataset, which should be chronological, has interleaved the fight with dialogue earlier in the episode.  This is a common but inconsistent problem with the dialogue in the file.  The `index` variable is fatally flawed, with no evident remedy to order the lines correctly.  
+
+Thanks to Brad Lindblad for the work he put into the `schrute` package.  However, I was not going to be able to do the analyses I wanted to do with it.
+
+## Dunder Mifflin Infinity
+
+When I first tried out the `schrute` package in December, I realized it could not provide the information I was hoping for.  After searching online for an alternative, I came upon [this blog entry](https://data.world/abhinavr8/the-office-scripts-dataset) by Abhinav Ralhan.  The file posted on that page (which I had to download and then import) does have lines in the correct order.  It also combines the double episodes, so "Dinner Party" is now season 4, episode 9.  We can also select by scene:
+
+```{r, message=FALSE}
+office_raw <- read_csv("the-office-lines - scripts.csv") %>%
+      select(id:scene, deleted, speaker, line_text)
+office_raw %>% filter(season == 4, episode == 9, scene == 19) %>%
+      head(12)
+```
+
+However, it has other problems, for instance, the dialogue for the later seasons has a large number of problematic characters.  
+
+```{r}
+office_raw %>% 
+      filter(season == 9, episode == 12) %>%
+      select(line_text) %>%
+      head(10)
+```
+
+I could not find an easy way to convert the bad characters to the punctuation marks they replaced.  The best I could do is change them to a benign character that is unlikely to be part of dialogue, and I chose a tilde (~).  The `office_raw` dataframe will be put through a couple of necessary cleanup steps as part of the import process.  
+
+```{r, message=FALSE}
+# problem character � replaced with tilde to be more easily repaired
+bad_char <- "�"
+office_raw <- read_csv("the-office-lines - scripts.csv") %>%
+      select(id:scene, deleted, speaker, line_text) %>%
+      mutate(line_text = str_replace_all(line_text, bad_char, "~")) %>%
+      mutate(speaker = str_trim(speaker))
+```
+
+Like the `schrute` package, the new dataset has some misspelled character names.  
+
+```{r, warning=FALSE}
+office_raw %>%
+      select(speaker) %>%
+      str_extract_all("Mic[:alpha:]+") %>%
+      table()
+```
+
+```{r, warning=FALSE}
+office_raw %>%
+    select(speaker) %>%
+    str_extract_all("Dar[:alpha:]+") %>%
+    table()
+```
+
+Maybe a handful of misspelled character names is not a big deal to you.  I am of a different temperament when it comes to data.  The polite term is "tidy".  
+  
+I found two ways to clean up the character names.  The first, naturally, was brute force.  I simply made a summary table of all character names in the dataset, then looked at those that appeared infrequently, going on the assumption that many errors would occur only once or twice.
+```{r}
+office_raw %>%
+      count(speaker) %>%
+      filter(n == 1) %>%
+      head(10)
+```
+
+Some are clearly errors (Heleen, Anglea, Carrol, Chares).  Some are not.  Several occur when a character is first introduced in the show and his/her full name is used, like Carol Stills.  To see how daunting the cleanup process can be, let's just see how many variations there are on minor character David Wallace:
+
+```{r, warning=FALSE}
+office_raw %>%
+      select(speaker) %>%
+      str_extract_all("[:alpha:]+id W[:alpha:]+") %>%
+      table()
+```
+
+So I spent a long afternoon creating an endless series of search and replace functions.
+
+```{r}
+office_tidy_chars <- office_raw %>%
+      mutate(speaker = str_replace(speaker, "Mic[:alpha:]+", "Michael")) %>%
+      mutate(speaker = str_replace(speaker, "[:alpha:]+hael", "Michael")) %>%
+      mutate(speaker = str_replace(speaker, "Dight", "Dwight")) %>%
+      mutate(speaker = str_replace(speaker, 
+                                   "^Dwig[:alpha:]*[:punct:]*$", "Dwight")) %>%
+      mutate(speaker = str_replace(speaker, "Meridith", "Meredith")) %>%
+      mutate(speaker = str_replace(speaker, "Stanely", "Stanley")) %>%
+      mutate(speaker = str_replace(speaker, "sAndy", "Andy")) %>%
+      mutate(speaker = str_replace(speaker, "^Ang[:alpha:]+", "Angela")) %>%
+      mutate(speaker = str_replace(speaker, "^Darr[:alpha:]*", "Darryl")) %>%
+      mutate(speaker = str_replace(speaker, "Daryl", "Darryl")) %>%
+      mutate(speaker = str_replace(speaker, "Phyl[:alpha:]*", "Phyllis")) %>%
+      mutate(speaker = str_replace(speaker, "^abe$", "Gabe")) %>%
+      mutate(speaker = str_replace(speaker, "Holy", "Holly")) %>%
+      mutate(speaker = str_replace(speaker, "Chares", "Charles")) %>%
+      mutate(speaker = str_replace(speaker,
+                                  "[:alpha:]+id Wa[:alpha:]+", "David Wallace")) %>%
+      mutate(speaker = str_replace(speaker, 
+                                   "Denagelo|DeAngelo|DeAgnelo", "Deangelo")) %>%
+      mutate(speaker = str_replace(speaker, "M Michael", "Michael")) %>%
+      mutate(speaker = str_replace(speaker, "^D$", "Dwight")) %>%
+      mutate(speaker = str_replace(speaker, "^Carro[:alpha:]+", "Carol")) %>%
+      mutate(speaker = str_replace(speaker, "Heleen", "Helene")) %>%
+      mutate(speaker = str_replace(speaker, "Mayers", "Meyers")) %>%
+      mutate(speaker = str_replace(speaker, "Liptop", "Lipton")) %>%
+# most of the changes below were for consistency, not to correct errors
+      mutate(speaker = str_replace(speaker, "Andy/", "Andy and ")) %>%
+      mutate(speaker = str_replace(speaker, "Pam/", "Pam and ")) %>%
+      mutate(speaker = str_replace(speaker, "Andy/", "Andy and ")) %>%
+      mutate(speaker = str_replace(speaker, "Michael/", "Michael and ")) %>%
+      mutate(speaker = str_replace(speaker, "Deangelo/", "Deangelo and ")) %>%
+      mutate(speaker = str_replace(speaker, "Angela/", "Angela and ")) %>%
+      mutate(speaker = str_replace(speaker, 
+                                   "Gabe/Kelly/Toby", "Gabe, Kelly, and Toby")) %>%
+      mutate(speaker = str_replace(speaker, "David Wallace", "David")) %>%
+      mutate(speaker = str_replace(speaker, "Todd Packer", "Todd")) %>%
+      mutate(speaker = str_replace(speaker, "Packer", "Todd")) %>%
+      mutate(speaker = str_replace(speaker, "Robert California", "Robert")) %>%
+      mutate(speaker = str_replace(speaker, "^Bob$", "Bob Vance")) %>%
+      mutate(speaker = str_replace(speaker, ", Vance Refrigeration", "")) %>%
+      mutate(speaker = str_replace(speaker, "Irving", "Erving")) %>%
+      mutate(speaker = str_replace(speaker, "^Julius$", "Julius Erving")) %>%
+      mutate(speaker = str_replace(speaker, "MeeMaw", "Mee-Maw")) %>%
+      mutate(speaker = str_replace(speaker, "&", "and")) %>%
+      mutate(speaker = str_replace(speaker, "worker", "Worker")) %>%
+      mutate(speaker = str_replace(speaker, "#", "")) %>%
+      mutate(speaker = str_replace(speaker, "CameraMan", "Cameraman")) %>%
+      mutate(speaker = str_replace(speaker, " Guy", " guy")) %>%
+      mutate(speaker = str_replace(speaker, " Employ", " employ")) %>%
+      mutate(speaker = str_replace(speaker, " Member", " member")) %>%
+      mutate(speaker = str_replace(speaker, " Phone", " phone")) %>%
+      mutate(speaker = str_replace(speaker, " Club", " club")) %>%
+      mutate(speaker = str_replace(speaker, " Manager", " manager")) %>%
+      mutate(speaker = str_replace(speaker, " Drive", " drive")) %>%
+      mutate(speaker = str_replace(speaker, " Crew", " crew")) %>%
+      mutate(speaker = str_replace(speaker, " Worker", " worker")) %>%
+      mutate(speaker = str_replace(speaker, " Teacher", " teacher")) %>%
+      mutate(speaker = str_replace(speaker, " Shareholder", " shareholder")) %>%
+      mutate(speaker = str_replace(speaker, " Pregnant", " pregnant")) %>%
+      mutate(speaker = str_replace(speaker, " Assistant", " assistant")) %>%
+      mutate(speaker = str_replace(speaker, " Guest", " guest")) %>%
+      mutate(speaker = str_replace(speaker, " Voice", " voice")) %>%
+      mutate(speaker = str_replace(speaker, " Mom", " mom")) %>%
+      mutate(speaker = str_replace(speaker, " Dad", " dad")) %>%
+      mutate(speaker = str_replace(speaker, " Father", " father")) %>%
+      mutate(speaker = str_replace(speaker, " Brother", " brother")) %>%
+      mutate(speaker = str_replace(speaker, " Sister", " sister")) %>%
+      mutate(speaker = str_replace(speaker, " Son", " son")) %>%
+      mutate(speaker = str_replace(speaker, " Girl", " girl")) %>%
+      mutate(speaker = str_replace(speaker, " Woman", " woman")) %>%
+      mutate(speaker = str_replace(speaker, " Man", " man")) %>%
+      mutate(speaker = str_replace(speaker, " Salesman", " salesman")) %>%
+      mutate(speaker = str_replace(speaker, "^Everybody$", "Everyone"))
+```
+
+```{r}
+office_raw %>%
+      distinct(speaker) %>%
+      nrow()
+office_tidy_chars %>%
+      distinct(speaker) %>%
+      nrow()
+```
+
+The 793 characters have been condensed to 730.  I could likely do better, but it may require case-by-case inspection.
+
+## Einsteins
+
+![](images_2020_12/thankyou.gif)
+
+A few days after writing out that interminable list of commands, I asked in the R4DS Slack channel if anyone had a better way, and Scott Came told me about the `fuzzyjoin` package created by David Robinson.  It offers the possibility to join based on near-matches, an indispensible tool to hack through an arduous task more quickly.
+
+The first thing I did was to identify the most common characters in a dataframe called `base_chars`, going on the assumption that all character names appearing over 100 times contained no misspellings.  Then I rejoined it to the original data using the `fuzzyjoin` function `stringdist_left_join` and filtered for matches that did not fit perfectly.
+
+```{r}
+# identify the 31 characters with 100+ lines of dialogue
+base_chars <- office_raw %>%
+      count(speaker) %>%
+      filter(n >= 100) %>%
+      select(base_char = speaker)
+      
+# use fuzzy left_join, then filter for closest but not identical
+corr_char <- office_raw %>%
+      count(speaker) %>%
+      stringdist_left_join(base_chars, by = c("speaker" = "base_char"), 
+                           method = "cosine",
+                           max_dist = 0.2, distance_col = "Distance") %>%
+      arrange(Distance, desc(n)) %>%
+      filter(n <= 100 & Distance <= 0.101)
+```
+```{r}
+corr_char %>% head(40)
+```
+```{r}
+sum(corr_char$n)
+```
+
+Using this approach, I can see that the first 28 fuzzy matches (Distance <= 0.101) identify misspelled character names.  Note that the distance using the `cosine` method returns 0 (perfect match) for transposed letters, so I had to filter by number of matches < 100.  
+
+The `fuzzyjoin` approach rapidly diminishes the work required; I cleaned up 163 misspelled characters.  However, 1) I still needed to manually inspect the matches to determine which were errors and which were legitimate entries, and 2) I didn't find all the misspellings.
+
+```{r}
+office_tidy_chars_fj <- office_raw %>%
+      left_join(select(corr_char, speaker, base_char), by = "speaker") %>%
+      group_by(id) %>%
+      mutate(speaker = coalesce(base_char, speaker)) %>%
+      select(-base_char)
+diag_lines_fj <- office_tidy_chars_fj %>%
+      group_by(speaker) %>%
+      summarize(n = n()) %>%
+      arrange(desc(n))
+```
+```{r}
+diag_lines_fj %>%
+      stringdist_left_join(base_chars, by = c("speaker" = "base_char"), 
+                           method = "cosine",
+                           max_dist = .5, distance_col = "Distance") %>%
+      group_by(speaker) %>%
+      filter(Distance > 0) %>%
+      arrange(Distance, desc(n)) %>%
+      head(10)
+```
+
+For a dataset that contains sitcom dialogue, some degree of error is tolerable.  For one that has critically important information, for example for a scientific publication, all of the errors must be tracked down.  This dataset illustrates just how difficult that task can be.
+
+In the end, although the `fuzzyjoin` approach was a time-saver, I returned to the brute force approach described earlier, using over 70 `str_replace` steps.  That created the `office_tidy_chars` dataframe.  I needed to run more checks to look for anomalous entries, e.g. dialogue misclassified as character names.
+
+```{r}
+office_tidy_chars %>%
+      group_by(speaker) %>%
+      summarize(n = n()) %>%
+      arrange(desc(n)) %>%
+      filter(n == 1 & str_length(speaker) > 30)
+```
+
+For the three problematic cases, I found it easiest to change them manually.
+
+```{r, eval=FALSE}
+office_tidy_chars[53564, 5] <- office_tidy_chars[53564, 6]
+office_tidy_chars[53565, 5] <- office_tidy_chars[53565, 6]
+office_tidy_chars[53573, 5] <- office_tidy_chars[53573, 6]
+office_tidy_chars[53564, 6] <- "Andy"
+office_tidy_chars[53565, 6] <- "Andy"
+office_tidy_chars[53573, 6] <- "Andy"
+```
+
+The use of the tilde to replace the bad characters in the data allowed me to repair some, though not all, of the altered words.  The `mutate` steps reduced the number of bad lines from 2559 in `office_tidy_chars` to 763 in the new dataframe, `office_tidy_dial`.
+
+```{r}
+office_tidy_dial <- office_tidy_chars %>%
+      mutate(line_text = str_replace_all(line_text, "~~~s", "'s")) %>%
+      mutate(line_text = str_replace_all(line_text, "~~~d", "'d")) %>%
+      mutate(line_text = str_replace_all(line_text, "~~~t", "'t")) %>%
+      mutate(line_text = str_replace_all(line_text, "~~~m", "'m")) %>%
+      mutate(line_text = str_replace_all(line_text, "~~~ll", "'ll")) %>%
+      mutate(line_text = str_replace_all(line_text, "~~~re", "'re")) %>%
+      mutate(line_text = str_replace_all(line_text, "~~~ve", "'ve")) %>%
+      mutate(line_text = str_replace_all(line_text, "~~~em", "'em")) %>%
+      mutate(line_text = str_replace_all(line_text, "~~~mon", "'mon"))
+```
+
+One final, critical practice to make my life easier: once I have the characters and dialogue reasonably cleaned up, save it as a file so I don't have to recreate it!
+
+```{r, eval=FALSE}
+write_csv(office_tidy_dial, "office_tidy_dialogue.csv")
+```
+
+## Take the rest of the day off 
+
+![](images_2020_12/high_five.gif)
+
+Now we can finally have some fun with the data.  How many times does Pam Beesly answer the phone by saying "Dunder Mifflin, this is Pam"?
+
+```{r}
+office_tidy_dial %>%
+      filter(str_detect(line_text, "his is Pam") & str_detect(line_text, "Dunder"))
+```
+
+I used the broader search string "his is Pam" to catch some slightly different phrasings as well as varying punctuation.  However, that caught a few other uses of "this is Pam" that were not related to her answering the phone.
+
+## This part was long and hard
+
+![](images_2020_12/shesaid.gif)
+
+Full list of "That's what she said" responses and who said the previous line.
+
+```{r}
+shesaidvec <- str_which(office_tidy_dial$line_text, "hat she sai|HAT SHE SAI|hat She Sai")
+shesaid <- office_tidy_dial[shesaidvec, ] %>%
+      bind_rows(office_tidy_dial[shesaidvec - 1, ]) %>%
+      arrange(id) %>%
+      head(10)
+# write_csv(shesaid, "thats_what_she_said.csv")
+```
+
+In total, there were 39 instances of "that's what she said" (thanks to Caitlyn Ralph's article for helping me locate a couple of variants).  So how could I create a reasonably tidy dataframe that would include both the response "that's what she said" and the line that triggered it?  I had two options:
+
+1. Write a regular expression that could grab either the prior line or an earlier line within the same string of dialogue.
+2. Say "this is only 39 cases" and do all the cleanup in Excel.
+
+As Sharla Gelfand wrote in [one of her recent talks:](https://sharla.party/talk/2019-10-24-uoft-brown-bag/)
+
+#### "no one is handing out medals for figuring out regular expressions"
+
+## Cleanup in Excel--nothing to see here
+
+```{r}
+shesaid_full <- read_xlsx("thats_what_she_said.xlsx")
+```
+
+```{r}
+shesaid_full
+```
+
+```{r, warning=FALSE, message=FALSE}
+links <- shesaid_full %>%
+      count(speaker, next_speaker)
+nodes <- tibble(name = unique(c(shesaid_full$speaker, shesaid_full$next_speaker)), 
+                index = 0:20)
+new_links <- left_join(links, nodes, by = c("speaker" = "name")) %>%
+      select(speaker = index, next_speaker, n) %>%
+      left_join(nodes, by = c("next_speaker" = "name")) %>%
+      select(speaker, next_speaker = index, n)
+```
+
+## Tidy Tuesday demands a graph
+
+In trying to find a way to visualize dialogue patterns, I happened upon the `networkD3` package written by [Christopher Gandrud et al.](https://christophergandrud.github.io/networkD3/).  One visualization offered by the package is a Sankey diagram that shows nodes and links.  I decided to give it a try.
+
+## Sankey diagram of Office characters who answered "that's what she said"
+##### Solid paths indicate first speaker on the left and TWSS response on the right
+##### Dashed paths indicate the reverse
+##### Loops indicate someone responding to themselves
+```{r, warning=FALSE, message=FALSE}
+sn <- sankeyNetwork(Links = new_links, Nodes = nodes, Source = "speaker",
+      Target = "next_speaker", Value = "n", NodeID = "name",
+      fontSize = 20, nodeWidth = 30, height = 600, width = 1000)
+sn
+```
+```{r, include=FALSE}
+# saveNetwork(sn, "Sankey_office.html")
+```
+
